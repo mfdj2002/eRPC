@@ -10,9 +10,9 @@ check_root() {
 
 # Function to check and configure huge pages on node 0
 check_huge_pages() {
-    sudo bash -c "echo 2048 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
-    sudo mkdir /mnt/huge
-    sudo mount -t hugetlbfs nodev /mnt/huge
+    bash -c "echo 2048 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
+    mkdir /mnt/huge
+    mount -t hugetlbfs nodev /mnt/huge
 }
 
 # Function to check and configure SHM limits
