@@ -1,15 +1,22 @@
 #include "common.h"
+#include <thread>
+#include <iostream>
 erpc::Rpc<erpc::CTransport> *rpc;
 erpc::MsgBuffer req;
 erpc::MsgBuffer resp;
 
-void cont_func(void *, void *) { printf("%s\n", resp.buf_); }
+void cont_func(void *, void *) { 
+  std::thread::id tid = std::this_thread::get_id();
+  std::cout << "cont func Thread ID: " << tid << std::endl;
+  printf("%s\n", resp.buf_); }
 
 void sm_handler(int, erpc::SmEventType, erpc::SmErrType, void *) {}
 
 int main() {
   std::string client_uri = kClientHostname + ":" + std::to_string(kUDPPort);
   erpc::Nexus nexus(client_uri);
+  std::thread::id tid = std::this_thread::get_id();
+  std::cout << "main Thread ID: " << tid << std::endl;
 
   rpc = new erpc::Rpc<erpc::CTransport>(&nexus, nullptr, 0, sm_handler);
 

@@ -6,7 +6,10 @@ template <class TTr>
 void Rpc<TTr>::process_comps_st() {
   assert(in_dispatch());
   const size_t num_pkts = transport_->rx_burst();
-  if (num_pkts == 0) return;
+  if (num_pkts == 0) {
+    // printf("num_pkts == 0 in process_comps_st.\n");
+    return;
+  }
 
   // Measure RX burst size
   dpath_stat_inc(dpath_stats_.rx_burst_calls_, 1);
@@ -63,11 +66,12 @@ void Rpc<TTr>::process_comps_st() {
     SSlot *sslot = &session->sslot_arr_[sslot_i];
 
     switch (pkthdr->pkt_type_) {
-      case PktType::kReq:
+      case PktType::kReq: {
         pkthdr->msg_size_ <= TTr::kMaxDataPerPkt
             ? process_small_req_st(sslot, pkthdr)
             : process_large_req_one_st(sslot, pkthdr);
         break;
+      }
       case PktType::kResp: {
         size_t rx_tsc = kCcOptBatchTsc ? batch_rx_tsc : dpath_rdtsc();
         process_resp_one_st(sslot, pkthdr, rx_tsc);

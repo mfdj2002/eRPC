@@ -8,10 +8,12 @@
 #include "util/latency.h"
 #include "util/numautils.h"
 #include "util/timer.h"
+#include <condition_variable>
 
 static constexpr size_t kAppBatchWriteReqType = 1;
+static constexpr uint8_t kAppDataByte = 3;  // Data transferred in req & resp
 static constexpr size_t kAppEvLoopMs = 500;
-static constexpr size_t kAppMaxConcurrency = 32;  // Outstanding reqs per thread
+static constexpr size_t kAppMaxConcurrency = 2;  // Outstanding reqs per thread
 
 // Globals
 volatile sig_atomic_t ctrl_c_pressed = 0;
@@ -88,35 +90,17 @@ class AppContext : public BasicAppContext {
   uint64_t req_ts[kAppMaxConcurrency];  // Per-request timestamps
   erpc::MsgBuffer req_msgbuf[kAppMaxConcurrency];
   erpc::MsgBuffer resp_msgbuf[kAppMaxConcurrency];
+
+  std::mutex conn_mutex_;
+  std::condition_variable conn_cv_;
+  bool connection_ready_ = false;
+
+  // Helper method to wait for connection
+  void wait_for_connection() {
+      std::unique_lock<std::mutex> lock(conn_mutex_);
+      conn_cv_.wait(lock, [this] { return connection_ready_; });
+  }
 };
-
-
-// class AppContext : public BasicAppContext {
-//  public:
-//   struct {
-//     MtIndex *mt_index = nullptr;      // The shared Masstree index
-//     threadinfo_t **ti_arr = nullptr;  // Thread info array, indexed by eRPC TID
-//   } server;
-
-//   struct {
-//     erpc::ChronoTimer tput_timer;  // Throughput measurement start
-//     app_stats_t *app_stats;        // Common stats array for all threads
-
-//     erpc::Latency point_latency;  // Latency of point requests (factor = 10)
-//     erpc::Latency range_latency;  // Latency of point requests (factor = 1)
-
-//     struct {
-//       uint32_t req_seed_;
-//       uint64_t req_ts_;
-//       erpc::MsgBuffer req_msgbuf_;
-//       erpc::MsgBuffer resp_msgbuf_;
-//     } window_[kAppMaxReqWindow];
-
-//     erpc::FastRand fast_rand;
-//     size_t num_resps_tot = 0;  // Total responses received (range & point reqs)
-//   } client;
-// };
-
 
 // Allocate request and response MsgBuffers
 void alloc_req_resp_msg_buffers(AppContext* c) {

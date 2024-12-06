@@ -76,3 +76,7 @@ third_party
 .clang_complete
 .cache
 compile_commands.json
+
+apps/*/config
+
+scripts/autorun_app_file

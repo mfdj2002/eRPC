@@ -3,12 +3,16 @@
 #include <cstring>
 #include "util/autorun_helpers.h"
 #include <thread>
-static constexpr bool kAppVerbose = false;
+#include <condition_variable>
+#include "util/numautils.h"
+#include "util/timer.h"
+
+static constexpr bool kAppVerbose = true;
 static constexpr bool kAppClientCheckResp = false;   // Check entire response
 
 void app_cont_func(void *, void *);  // Forward declaration
 
-void batch_write_req_handler(erpc::ReqHandle *req_handle, void *_context) {
+void batch_write_req_handler(erpc::ReqHandle *req_handle, void *_context) { //this _context is just the context you initialized rpc with
   auto *c = static_cast<AppContext *>(_context);
   const erpc::MsgBuffer *req_msgbuf = req_handle->get_req_msgbuf();
   //demarshall..
@@ -32,20 +36,21 @@ void batch_write_req_handler(erpc::ReqHandle *req_handle, void *_context) {
 
 // Send one request using this MsgBuffer
 void send_req(AppContext *c, size_t msgbuf_idx) {
-  erpc::MsgBuffer &req_msgbuf = c->req_msgbuf[msgbuf_idx];
-  assert(req_msgbuf.get_data_size() == FLAGS_req_size);
+    erpc::MsgBuffer &req_msgbuf = c->req_msgbuf[msgbuf_idx];
+    assert(req_msgbuf.get_data_size() == FLAGS_req_size);
 
-  if (kAppVerbose) {
-    printf("large_rpc_tput: Thread %zu sending request using msgbuf_idx %zu.\n",
-           c->thread_id_, msgbuf_idx);
-  }
+    if (kAppVerbose) {
+        printf("large_rpc_tput: Thread %zu sending request using msgbuf_idx %zu.\n",
+               c->thread_id_, msgbuf_idx);
+    }
 
-  c->req_ts[msgbuf_idx] = erpc::rdtsc();
-  c->rpc_->enqueue_request(c->session_num_vec_[0], kAppBatchWriteReqType, &req_msgbuf,
+    c->req_ts[msgbuf_idx] = erpc::rdtsc();
+    c->wait_for_connection();  // Wait for connection to be established
+    c->rpc_->enqueue_request(c->session_num_vec_[0], kAppBatchWriteReqType, &req_msgbuf,
                            &c->resp_msgbuf[msgbuf_idx], app_cont_func,
                            reinterpret_cast<void *>(msgbuf_idx));
 
-  c->stat_tx_bytes_tot += FLAGS_req_size;
+    c->stat_tx_bytes_tot += FLAGS_req_size;
 }
 
 
@@ -148,29 +153,22 @@ void client_print_stats(AppContext &c) {
   c.tput_t0.reset();
 }
 
-void client_thread_func(size_t thread_id, app_stats_t *app_stats,
-                        erpc::Nexus *nexus) {
-  AppContext c;
-  c.thread_id_ = thread_id;
-  c.app_stats = app_stats;
-
-  if (thread_id == 0) {
+void client_thread_func(AppContext &c, erpc::Nexus *nexus) {
+  if (c.thread_id_ == 0) {
     c.tmp_stat_ = new TmpStat(app_stats_t::get_template_str());
   }
-
-  std::vector<size_t> port_vec = flags_get_numa_ports(FLAGS_numa_node);
-  erpc::rt_assert(port_vec.size() > 0);
-  const uint8_t phy_port = port_vec.at(thread_id % port_vec.size());
+  const uint8_t phy_port = 2;
 
   erpc::Rpc<erpc::CTransport> rpc(nexus, static_cast<void *>(&c),
-                                  static_cast<uint8_t>(thread_id),
+                                  static_cast<uint8_t>(c.thread_id_),
                                   basic_sm_handler, phy_port);
   rpc.retry_connect_on_invalid_rpc_id_ = true;
   c.rpc_ = &rpc;
+  
 
   // Each client creates a session to only one server thread
   const size_t client_gid =
-      (FLAGS_process_id * FLAGS_num_client_threads) + thread_id;
+      (FLAGS_process_id * FLAGS_num_client_threads) + c.thread_id_;
   
   // Connect to the other process (1 if we're 0, 0 if we're 1)
   const size_t server_process_id = (FLAGS_process_id == 0) ? 1 : 0; // temporary solution to test with only 2 processes
@@ -186,25 +184,23 @@ void client_thread_func(size_t thread_id, app_stats_t *app_stats,
     if (ctrl_c_pressed == 1) return;
   }
   assert(c.rpc_->is_connected(c.session_num_vec_[0]));
-  fprintf(stderr, "main: Thread %zu: Connected. Sending requests.\n",
-          thread_id);
+  {
+        std::lock_guard<std::mutex> lock(c.conn_mutex_);
+        c.connection_ready_ = true;
+    }
+    c.conn_cv_.notify_all();
+  printf("client thread: Thread %zu: Connected. Sending requests.\n",
+          c.thread_id_);
+  fflush(stdout);
 
   alloc_req_resp_msg_buffers(&c);
-  c.tput_t0.reset();
-    // Any thread that creates a session sends requests
-  if (c.session_num_vec_.size() > 0) {
-    for (size_t msgbuf_idx = 0; msgbuf_idx < FLAGS_concurrency; msgbuf_idx++) {
-      send_req(&c, msgbuf_idx);
-    }
-  }
 
   for (size_t i = 0; i < FLAGS_test_ms; i += kAppEvLoopMs) {
     c.rpc_->run_event_loop(kAppEvLoopMs);
     if (ctrl_c_pressed == 1) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
     client_print_stats(c);
   }
-  // c.rpc_->run_event_loop(FLAGS_test_ms);
-  // client_print_stats(c);
 }
 
 void server_thread_func(size_t thread_id, erpc::Nexus *nexus) {
@@ -222,6 +218,17 @@ void server_thread_func(size_t thread_id, erpc::Nexus *nexus) {
   while (ctrl_c_pressed == 0) rpc.run_event_loop(200);
 }
 
+void start_sending_requests(AppContext &c) {
+  c.tput_t0.reset();
+  // Any thread that creates a session sends requests
+  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  printf("start_sending_requests: Thread %zu: Sending requests.\n", c.thread_id_);
+  fflush(stdout);
+  for (size_t msgbuf_idx = 0; msgbuf_idx < FLAGS_concurrency; msgbuf_idx++) {
+    send_req(&c, msgbuf_idx);
+  }
+}
+
 int main(int argc, char **argv) {
   signal(SIGINT, ctrl_c_handler);
   gflags::ParseCommandLineFlags(&argc, &argv, true);
@@ -237,6 +244,8 @@ int main(int argc, char **argv) {
   std::vector<std::thread> thread_arr;
   size_t total_threads = FLAGS_num_server_fg_threads + FLAGS_num_client_threads;
   thread_arr.reserve(total_threads);
+  std::vector<AppContext*> contexts;
+  contexts.reserve(total_threads);
 
   // Create app_stats for client threads
   auto *app_stats = new app_stats_t[FLAGS_num_client_threads];
@@ -249,13 +258,30 @@ int main(int argc, char **argv) {
     } else {
       // Client threads - adjust thread_id to be 0-based for clients
       size_t client_thread_id = i - FLAGS_num_server_fg_threads;
-      thread_arr.emplace_back(client_thread_func, client_thread_id, app_stats, &nexus);
+      AppContext* c = new AppContext();
+      c->thread_id_ = client_thread_id;
+      c->app_stats = app_stats;
+      contexts.push_back(c);
+      thread_arr.emplace_back(client_thread_func, std::ref(*c), &nexus);
     }
     erpc::bind_to_core(thread_arr.back(), FLAGS_numa_node, i);
   }
 
+  for (auto c : contexts) {
+    std::thread t(start_sending_requests, std::ref(*c));
+    t.join();
+  }
+
+  printf("main: All requests sent. Waiting for threads to finish.\n");
+  fflush(stdout);
+
   for (auto &thread : thread_arr) {
     thread.join();
+  }
+
+  // Don't forget to clean up the allocated AppContexts at the end
+  for (auto c : contexts) {
+    delete c;  // Delete the pointer directly
   }
 
   delete[] app_stats;

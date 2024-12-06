@@ -13,8 +13,12 @@ void Rpc<TTr>::run_event_loop_do_one_st() {
   // The packet RX code uses ev_loop_tsc as the RX timestamp, so it must be
   // next to ev_loop_tsc stamping.
   ev_loop_tsc_ = dpath_rdtsc();
+  // printf("reached process_comps_st in run_event_loop_do_one_st\n");
+  // fflush(stdout);
   process_comps_st();  // RX
 
+  // printf("reached process_credit_stall_queue_st in run_event_loop_do_one_st\n");
+  // fflush(stdout);
   process_credit_stall_queue_st();    // TX
   if (kCcPacing) process_wheel_st();  // TX
 

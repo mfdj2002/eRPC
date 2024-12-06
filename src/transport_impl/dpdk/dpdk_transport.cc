@@ -98,7 +98,8 @@ DpdkTransport::DpdkTransport(uint16_t sm_udp_port, uint8_t rpc_id,
     // Get an available queue on phy_port
     qp_id_ = g_memzone->get_qp(phy_port, 33 /* XXX */);
     if (qp_id_ != kInvalidQpId) {
-      ERPC_INFO("DPDK transport for Rpc %u got QP %zu\n", rpc_id, qp_id_);
+      // printf("DPDK transport for Rpc %u got QP %zu\n", rpc_id, qp_id_);
+      // fflush(stdout);
     } else {
       ERPC_ERROR(
           "DPDK transport for Rpc %u failed to get a free TX/RQ queue pair. "

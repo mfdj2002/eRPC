@@ -6,12 +6,10 @@
 #include "util/autorun_helpers.h"
 #include "util/latency.h"
 #include "util/numautils.h"
-#include <chrono>
-#include <thread>
 
 static constexpr size_t kAppEvLoopMs = 1000;  // Duration of event loop
-static constexpr bool kAppVerbose = true;    // Print debug info on datapath
-static constexpr bool kAppMeasureLatency = true;
+static constexpr bool kAppVerbose = false;    // Print debug info on datapath
+static constexpr bool kAppMeasureLatency = false;
 static constexpr double kAppLatFac = 3.0;        // Precision factor for latency
 static constexpr bool kAppPayloadCheck = false;  // Check full request/response
 
@@ -108,7 +106,7 @@ static_assert(sizeof(app_stats_t) == 64, "");
 // Per-thread application context
 class AppContext : public BasicAppContext {
  public:
-  erpc::ChronoTimer tput_t0;  // Start time for throughput measurement
+  struct timespec tput_t0;  // Start time for throughput measurement
   app_stats_t *app_stats;   // Common stats array for all threads
 
   size_t stat_resp_rx[kAppMaxConcurrency] = {0};  // Resps received for batch i
@@ -125,7 +123,7 @@ void app_cont_func(void *, void *);  // Forward declaration
 
 // Send all requests for a batch
 void send_reqs(AppContext *c, size_t batch_i) {
-  erpc::rt_assert(batch_i < FLAGS_concurrency, "Invalid batch index");
+  assert(batch_i < FLAGS_concurrency);
   BatchContext &bc = c->batch_arr[batch_i];
 
   for (size_t i = 0; i < FLAGS_batch_size; i++) {
@@ -154,8 +152,6 @@ void send_reqs(AppContext *c, size_t batch_i) {
 
 void req_handler(erpc::ReqHandle *req_handle, void *_context) {
   auto *c = static_cast<AppContext *>(_context);
-  // printf("req_handler reached.\n");
-  // fflush(stdout);
   c->stat_req_rx_tot++;
 
   const erpc::MsgBuffer *req_msgbuf = req_handle->get_req_msgbuf();
@@ -165,7 +161,7 @@ void req_handler(erpc::ReqHandle *req_handle, void *_context) {
   if (kAppOptDisableRxRingReq) {
     // Simulate copying the request off the RX ring
     auto copy_msgbuf = c->rpc_->alloc_msg_buffer(FLAGS_msg_size);
-    assert(copy_msgbuf.buf_ != nullptr);
+    assert(copy_msgbuf.buf != nullptr);
     memcpy(copy_msgbuf.buf_, req_msgbuf->buf_, FLAGS_msg_size);
     c->rpc_->free_msg_buffer(copy_msgbuf);
   }
@@ -174,7 +170,7 @@ void req_handler(erpc::ReqHandle *req_handle, void *_context) {
   if (kAppOptDisablePreallocResp) {
     erpc::MsgBuffer &resp_msgbuf = req_handle->dyn_resp_msgbuf_;
     resp_msgbuf = c->rpc_->alloc_msg_buffer(FLAGS_msg_size);
-    assert(resp_msgbuf.buf_ != nullptr);
+    assert(resp_msgbuf.buf != nullptr);
 
     if (!kAppPayloadCheck) {
       resp_msgbuf.buf_[0] = req_msgbuf->buf_[0];
@@ -222,7 +218,7 @@ void app_cont_func(void *_context, void *_tag) {
   }
 
   if (kAppVerbose) {
-    printf("Received response for batch %lu, msgbuf %lu.\n", tag.s.batch_i,
+    printf("Received response for batch %u, msgbuf %u.\n", tag.s.batch_i,
            tag.s.msgbuf_i);
   }
 
@@ -259,17 +255,12 @@ void connect_sessions(AppContext &c) {
 
     if (FLAGS_sm_verbose == 1) {
       printf("Process %zu, thread %zu: Creating sessions to %s.\n",
-             FLAGS_process_id, c.thread_id_, remote_uri.c_str());
+             FLAGS_process_id, c.thread_id, remote_uri.c_str());
     }
 
     for (size_t t_i = 0; t_i < FLAGS_num_threads; t_i++) {
       if (FLAGS_process_id == p_i && c.thread_id_ == t_i) continue;
-      int session_num;
-      if (t_i != FLAGS_num_threads - 1) {
-        session_num = c.rpc_->create_session(remote_uri, t_i+1);
-      } else {
-        session_num = c.rpc_->create_session(remote_uri, 0);
-      }
+      int session_num = c.rpc_->create_session(remote_uri, t_i);
       erpc::rt_assert(session_num >= 0, "Failed to create session");
       c.session_num_vec_.push_back(session_num);
     }
@@ -282,7 +273,7 @@ void connect_sessions(AppContext &c) {
 }
 
 void print_stats(AppContext &c) {
-  const double ns = c.tput_t0.get_ns();
+  double seconds = erpc::sec_since(c.tput_t0);
 
   // Min/max responses for a concurrent batch, to check for stagnated batches
   size_t max_resps = 0, min_resps = SIZE_MAX;
@@ -295,24 +286,24 @@ void print_stats(AppContext &c) {
   // Session throughput percentiles, used if rate computation is enabled
   std::vector<double> session_tput;
   if (erpc::kCcRateComp) {
-    for (int session_num : c.session_num_vec_) {
-      erpc::Timely *timely = c.rpc_->get_timely(session_num);
+    for (int session_num : c.session_num_vec) {
+      erpc::Timely *timely = c.rpc->get_timely(session_num);
       session_tput.push_back(timely->get_rate_gbps());
     }
     std::sort(session_tput.begin(), session_tput.end());
   }
 
-  double tput_mrps = c.stat_resp_rx_tot / ns * 1000;
-  c.app_stats[c.thread_id_].mrps = tput_mrps;
-  c.app_stats[c.thread_id_].num_re_tx = c.rpc_->pkt_loss_stats_.num_re_tx_;
+  double tput_mrps = c.stat_resp_rx_tot / (seconds * 1000000);
+  c.app_stats[c.thread_id].mrps = tput_mrps;
+  c.app_stats[c.thread_id].num_re_tx = c.rpc->pkt_loss_stats.num_re_tx;
   if (kAppMeasureLatency) {
-    c.app_stats[c.thread_id_].lat_us_50 = c.latency.perc(0.50) / kAppLatFac;
-    c.app_stats[c.thread_id_].lat_us_99 = c.latency.perc(0.99) / kAppLatFac;
-    c.app_stats[c.thread_id_].lat_us_999 = c.latency.perc(0.999) / kAppLatFac;
-    c.app_stats[c.thread_id_].lat_us_9999 = c.latency.perc(0.9999) / kAppLatFac;
+    c.app_stats[c.thread_id].lat_us_50 = c.latency.perc(0.50) / kAppLatFac;
+    c.app_stats[c.thread_id].lat_us_99 = c.latency.perc(0.99) / kAppLatFac;
+    c.app_stats[c.thread_id].lat_us_999 = c.latency.perc(0.999) / kAppLatFac;
+    c.app_stats[c.thread_id].lat_us_9999 = c.latency.perc(0.9999) / kAppLatFac;
   }
 
-  size_t num_sessions = c.session_num_vec_.size();
+  size_t num_sessions = c.session_num_vec.size();
 
   // Optional stats
   char lat_stat[100];
@@ -329,14 +320,14 @@ void print_stats(AppContext &c) {
       "Process %zu, thread %zu: %.3f Mrps, re_tx = %zu, still_in_wheel = %zu. "
       "RX: %zuK resps, %zuK reqs. Resps/batch: min %zuK, max %zuK. "
       "Latency: %s. Rate = %s.\n",
-      FLAGS_process_id, c.thread_id_, tput_mrps,
-      c.app_stats[c.thread_id_].num_re_tx,
-      c.rpc_->pkt_loss_stats_.still_in_wheel_during_retx_,
+      FLAGS_process_id, c.thread_id, tput_mrps,
+      c.app_stats[c.thread_id].num_re_tx,
+      c.rpc->pkt_loss_stats.still_in_wheel_during_retx,
       c.stat_resp_rx_tot / 1000, c.stat_req_rx_tot / 1000, min_resps / 1000,
       max_resps / 1000, kAppMeasureLatency ? lat_stat : "N/A",
       erpc::kCcRateComp ? rate_stat : "N/A");
 
-  if (c.thread_id_ == 0) {
+  if (c.thread_id == 0) {
     app_stats_t accum;
     for (size_t i = 0; i < FLAGS_num_threads; i++) accum += c.app_stats[i];
     if (kAppMeasureLatency) {
@@ -345,32 +336,34 @@ void print_stats(AppContext &c) {
       accum.lat_us_999 /= FLAGS_num_threads;
       accum.lat_us_9999 /= FLAGS_num_threads;
     }
-    c.tmp_stat_->write(accum.to_string());
+    c.tmp_stat->write(accum.to_string());
   }
 
   c.stat_resp_rx_tot = 0;
   c.stat_req_rx_tot = 0;
-  c.rpc_->pkt_loss_stats_.num_re_tx_ = 0;
+  c.rpc->pkt_loss_stats.num_re_tx = 0;
   c.latency.reset();
 
-  c.tput_t0.reset();
+  clock_gettime(CLOCK_REALTIME, &c.tput_t0);
 }
 
 // The function executed by each thread in the cluster
 void thread_func(size_t thread_id, app_stats_t *app_stats, erpc::Nexus *nexus) {
   AppContext c;
-  c.thread_id_ = thread_id;
+  c.thread_id = thread_id;
   c.app_stats = app_stats;
-  if (thread_id == 0) c.tmp_stat_ = new TmpStat(app_stats_t::get_template_str());
+  if (thread_id == 0) c.tmp_stat = new TmpStat(app_stats_t::get_template_str());
 
-  uint8_t phy_port = 2;
+  std::vector<size_t> port_vec = flags_get_numa_ports(FLAGS_numa_node);
+  erpc::rt_assert(port_vec.size() > 0);
+  uint8_t phy_port = port_vec.at(thread_id % port_vec.size());
 
   erpc::Rpc<erpc::CTransport> rpc(nexus, static_cast<void *>(&c),
                                   static_cast<uint8_t>(thread_id),
                                   basic_sm_handler, phy_port);
 
-  rpc.retry_connect_on_invalid_rpc_id_ = true;
-  c.rpc_ = &rpc;
+  rpc.retry_connect_on_invalid_rpc_id = true;
+  c.rpc = &rpc;
 
   // Pre-allocate request and response MsgBuffers for each batch
   for (size_t i = 0; i < FLAGS_concurrency; i++) {
@@ -381,17 +374,13 @@ void thread_func(size_t thread_id, app_stats_t *app_stats, erpc::Nexus *nexus) {
     }
   }
 
-  printf("creating sessions...\n");
-  fflush(stdout);
-
   connect_sessions(c);
 
   printf("Process %zu, thread %zu: All sessions connected. Starting work.\n",
          FLAGS_process_id, thread_id);
-  fflush(stdout);
 
   // Start work
-  c.tput_t0.reset();
+  clock_gettime(CLOCK_REALTIME, &c.tput_t0);
   for (size_t i = 0; i < FLAGS_concurrency; i++) send_reqs(&c, i);
 
   for (size_t i = 0; i < FLAGS_test_ms; i += 1000) {
@@ -415,7 +404,7 @@ int main(int argc, char **argv) {
                       erpc::Transport::kNumRxRingEntries,
                   "Too few ring buffers");
 
-  erpc::Nexus nexus(erpc::get_uri_for_process(FLAGS_process_id),    
+  erpc::Nexus nexus(erpc::get_uri_for_process(FLAGS_process_id),
                     FLAGS_numa_node, 0);
   nexus.register_req_func(kAppReqType, req_handler);
   nexus.register_req_func(kPingReqHandlerType, ping_req_handler);
