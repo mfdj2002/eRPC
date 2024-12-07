@@ -13,8 +13,8 @@ void cont_func(void *, void *) {
 void sm_handler(int, erpc::SmEventType, erpc::SmErrType, void *) {}
 
 int main() {
-  std::string client_uri = kClientHostname + ":" + std::to_string(kUDPPort);
-  erpc::Nexus nexus(client_uri);
+  std::string client1_uri = kClient1Hostname + ":" + std::to_string(kUDPPort);
+  erpc::Nexus nexus(client1_uri);
   std::thread::id tid = std::this_thread::get_id();
   std::cout << "main Thread ID: " << tid << std::endl;
 
@@ -28,7 +28,7 @@ int main() {
   req = rpc->alloc_msg_buffer_or_die(kMsgSize);
   resp = rpc->alloc_msg_buffer_or_die(kMsgSize);
 
-  rpc->enqueue_request(session_num, kReqType, &req, &resp, cont_func, nullptr);
+  rpc->enqueue_request(session_num, kReq1Type, &req, &resp, cont_func, nullptr);
   rpc->run_event_loop(100);
 
   delete rpc;
