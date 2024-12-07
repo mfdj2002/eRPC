@@ -411,8 +411,10 @@ message(STATUS "Linking libraries for ${APP} = ${LIBRARIES}")
 # Compile hello_world apps
 add_executable(hello_server hello_world/server.cc)
 target_link_libraries(hello_server erpc ${LIBRARIES})
-add_executable(hello_client hello_world/client.cc)
-target_link_libraries(hello_client erpc ${LIBRARIES})
+add_executable(hello_client1 hello_world/client1.cc)
+target_link_libraries(hello_client1 erpc ${LIBRARIES})
+add_executable(hello_client2 hello_world/client2.cc)
+target_link_libraries(hello_client2 erpc ${LIBRARIES})
 
 # Compile the tests
 if(TESTING)
