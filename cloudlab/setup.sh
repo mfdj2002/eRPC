@@ -29,11 +29,11 @@ configure_shm_limits() {
     sysctl -p
 }
 
+check_root
 
 bash install-rdma.sh
 bash install-dpdk.sh
 
-check_root
 configure_huge_pages
 configure_shm_limits
 
