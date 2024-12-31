@@ -109,6 +109,6 @@ main
 
 echo "RDMA-Core installation process completed!"
 
-sudo apt install make cmake g++ gcc libnuma-dev libgflags-dev numactl
+sudo apt install -y make cmake g++ gcc libnuma-dev libgflags-dev numactl
 sudo modprobe ib_uverbs
 sudo modprobe mlx5_ib
