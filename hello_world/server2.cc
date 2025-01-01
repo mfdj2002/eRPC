@@ -29,7 +29,7 @@ void req_handler(erpc::ReqHandle *req_handle, void *) {
 void sm_handler(int, erpc::SmEventType, erpc::SmErrType, void *) {}
 
 int main() {
-  std::string server_uri = kServer1Hostname + ":" + std::to_string(kUDPPort);
+  std::string server_uri = kServer2Hostname + ":" + std::to_string(kUDPPort);
   erpc::Nexus nexus(server_uri);
   nexus.register_req_func(kReq1Type, req_handler);
 
