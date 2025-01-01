@@ -31,6 +31,7 @@ configure_shm_limits() {
 
 check_root
 
+mkdir -p /mnt/tmp
 bash install-rdma.sh
 bash install-dpdk.sh
 

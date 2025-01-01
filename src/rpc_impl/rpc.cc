@@ -2,11 +2,11 @@
  * @file rpc.cc
  * @brief Simple Rpc-related methods.
  */
+#include "rpc.h"
+
 #include <algorithm>
 #include <iostream>
 #include <stdexcept>
-
-#include "rpc.h"
 
 namespace erpc {
 
@@ -38,7 +38,7 @@ Rpc<TTr>::Rpc(Nexus *nexus, void *context, uint8_t rpc_id,
   creator_etid_ = get_etid();
 
   if (ERPC_LOG_LEVEL >= ERPC_LOG_LEVEL_REORDER) {
-    const auto trace_filename = "/tmp/erpc_trace_" +
+    const auto trace_filename = "/mnt/tmp/erpc_trace_" +
                                 std::to_string(nexus->sm_udp_port_) + "-rpc_" +
                                 std::to_string(rpc_id);
     trace_file_ = fopen(trace_filename.c_str(), "w");
